@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from openai import AsyncOpenAI
 
 from app.config import get_settings
 from app.database import init_db
@@ -97,7 +98,7 @@ async def debug_dns():
 
         results[label] = info
 
-    # LLM call
+    # LLM call via call_llm
     llm_result = "not attempted"
     try:
         content = await asyncio.wait_for(
@@ -110,6 +111,35 @@ async def debug_dns():
         )
         llm_result = f"OK: {content[:50]}"
     except Exception as e:
-        llm_result = f"FAIL: {type(e).__name__}: {str(e)[:200]}"
+        llm_result = f"FAIL: {type(e).__name__}: {str(e)[:300]}"
 
-    return {"tests": results, "llm_test": llm_result}
+    # Direct AsyncOpenAI test with full traceback
+    import traceback as tb
+    direct_result = "not attempted"
+    try:
+        from app.config import get_settings
+        s = get_settings()
+        pool = s.model_pool
+        if pool:
+            p = pool[0]
+            client = AsyncOpenAI(
+                api_key=p["key"],
+                base_url=p["base_url"],
+                max_retries=0,
+            )
+            resp = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=p["model"],
+                    messages=[{"role": "user", "content": "hi"}],
+                    max_tokens=10,
+                    timeout=30,
+                ),
+                timeout=40,
+            )
+            direct_result = f"OK: {resp.choices[0].message.content[:50]}"
+        else:
+            direct_result = "pool empty"
+    except Exception as e:
+        direct_result = f"FAIL: {type(e).__name__}: {str(e)[:300]}\n{tb.format_exc()[-500:]}"
+
+    return {"tests": results, "llm_test": llm_result, "direct_test": direct_result}
