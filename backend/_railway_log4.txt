@@ -1,0 +1,150 @@
+﻿Mounting volume on: /var/lib/containers/railwayapp/bind-mounts/1c100c01-1f33-429b-8088-525b820e0522/vol_bzotn113ra2jrer1
+Starting Container
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     100.64.0.2:22450 - "POST /api/projects HTTP/1.1" 200 OK
+INFO:     100.64.0.3:61052 - "POST /api/build/stream HTTP/1.1" 200 OK
+INFO:     100.64.0.2:22450 - "GET /api/projects HTTP/1.1" 200 OK
+LLM provider 1/1 failed (model=kimi-k2.7-code): APIConnectionError: Connection error.
+ERROR:    Exception in ASGI application
+  + Exception Group Traceback (most recent call last):
+  |   File "/app/.venv/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 399, in run_asgi
+  |     result = await app(  # type: ignore[func-returns-value]
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "/app/.venv/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 70, in __call__
+  |     return await self.app(scope, receive, send)
+  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "/app/.venv/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+  |     await super().__call__(scope, receive, send)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/applications.py", line 123, in __call__
+  |     await self.middleware_stack(scope, receive, send)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+  |     raise exc
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+  |     await self.app(scope, receive, _send)
+  |     await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/middleware/cors.py", line 85, in __call__
+  |     await self.app(scope, receive, send)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 65, in __call__
+  |     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 64, in wrapped_app
+  |     raise exc
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+  |     await app(scope, receive, sender)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/routing.py", line 756, in __call__
+  |     await self.middleware_stack(scope, receive, send)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/routing.py", line 776, in app
+  |     await route.handle(scope, receive, send)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/routing.py", line 297, in handle
+  |     await self.app(scope, receive, send)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/routing.py", line 77, in app
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 64, in wrapped_app
+  |     raise exc
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+  |     await app(scope, receive, sender)
+  |   File "/app/.venv/lib/python3.11/site-packages/starlette/routing.py", line 75, in app
+  |     await response(scope, receive, send)
+  |   File "/app/.venv/lib/python3.11/site-packages/sse_starlette/sse.py", line 268, in __call__
+  |     async with anyio.create_task_group() as task_group:
+  |   File "/app/.venv/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 815, in __aexit__
+  |     raise BaseExceptionGroup(
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "/app/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 69, in map_httpcore_exceptions
+    |     yield
+    |   File "/app/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 373, in handle_async_request
+    |     resp = await self._pool.handle_async_request(req)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/httpcore/_async/connection_pool.py", line 256, in handle_async_request
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/httpcore/_backends/anyio.py", line 113, in connect_tcp
+    |     with map_exceptions(exc_map):
+    |     raise exc from None
+    |   File "/mise/installs/python/3.11.15/lib/python3.11/contextlib.py", line 158, in __exit__
+    |   File "/app/.venv/lib/python3.11/site-packages/httpcore/_async/connection_pool.py", line 236, in handle_async_request
+    |     response = await connection.handle_async_request(
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/httpcore/_async/connection.py", line 101, in handle_async_request
+    |     raise exc
+    |   File "/app/.venv/lib/python3.11/site-packages/httpcore/_async/connection.py", line 78, in handle_async_request
+    |     stream = await self._connect(request)
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/httpcore/_async/connection.py", line 124, in _connect
+    |     stream = await self._network_backend.connect_tcp(**kwargs)
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/httpcore/_backends/auto.py", line 31, in connect_tcp
+    |     return await self._backend.connect_tcp(
+    |     self.gen.throw(typ, value, traceback)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    |   File "/app/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1689, in _send_handling_auth
+    |     raise to_exc(exc) from exc
+    | httpcore.ConnectError: [Errno -2] Name or service not known
+    |     response = await self._send_handling_redirects(
+    | 
+    | The above exception was the direct cause of the following exception:
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | 
+    |   File "/app/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1726, in _send_handling_redirects
+    | Traceback (most recent call last):
+    |     response = await self._send_single_request(request)
+    |   File "/app/.venv/lib/python3.11/site-packages/openai/_base_client.py", line 1558, in _request
+    |     response = await self._client.send(
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1661, in send
+    |     response = await self._send_handling_auth(
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1763, in _send_single_request
+    |     response = await transport.handle_async_request(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 372, in handle_async_request
+    |     with map_httpcore_exceptions():
+    |   File "/mise/installs/python/3.11.15/lib/python3.11/contextlib.py", line 158, in __exit__
+    |     self.gen.throw(typ, value, traceback)
+    |   File "/app/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 86, in map_httpcore_exceptions
+    |     raise mapped_exc(message) from exc
+    | httpx.ConnectError: [Errno -2] Name or service not known
+    | 
+    | The above exception was the direct cause of the following exception:
+    | 
+    | Traceback (most recent call last):
+    |   File "/app/.venv/lib/python3.11/site-packages/anyio/_core/_tasks.py", line 275, in _run_coro
+    |     retval = await self._coro
+    |              ^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/sse_starlette/sse.py", line 271, in wrap
+    |     await func()
+    |   File "/app/.venv/lib/python3.11/site-packages/sse_starlette/sse.py", line 251, in stream_response
+    |     return await self._post(
+    |               ^^^^^^^^^^^^^^^
+    |            ^^^^^^^^^^^^^^^^^
+    |     return fut.result()
+    |   File "/app/app/services/ai_service.py", line 100, in call_llm
+    |     async for data in self.body_iterator:
+    |     response = await asyncio.wait_for(
+    |            ^^^^^^^^^^^^
+    |   File "/app/app/routers/build.py", line 74, in event_generator
+    |     raise last_exc or RuntimeError("No LLM providers available")
+    |                ^^^^^^^^^^^^^^^^^^^^^^^
+    |     async for event in stream_build_process(
+    |   File "/mise/installs/python/3.11.15/lib/python3.11/asyncio/tasks.py", line 489, in wait_for
+    |   File "/app/app/services/ai_service.py", line 1247, in stream_build_process
+    |     analysis = await analyze_requirements(prompt)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/openai/resources/chat/completions.py", line 1295, in create
+    |   File "/app/app/services/ai_service.py", line 78, in call_llm
+    |   File "/app/app/services/ai_service.py", line 671, in analyze_requirements
+    |     content = await call_llm(
+    |   File "/app/.venv/lib/python3.11/site-packages/openai/_base_client.py", line 1826, in post
+    |     return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/openai/_base_client.py", line 1519, in request
+    |     return await self._request(
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |   File "/app/.venv/lib/python3.11/site-packages/openai/_base_client.py", line 1592, in _request
+    |     raise APIConnectionError(request=request) from err
+    | openai.APIConnectionError: Connection error.
+    +------------------------------------
+INFO:     100.64.0.4:43022 - "GET /api/projects/f1b10613-fbd1-4e2c-9936-9d64e5596011 HTTP/1.1" 200 OK
