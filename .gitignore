@@ -22,6 +22,11 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Project reference screenshots (not app assets)
+/*.png
+/*.jpg
+/*.jpeg
+
 # Build
 .next/
 out/
