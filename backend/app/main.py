@@ -54,25 +54,50 @@ async def health_check():
 
 @app.get("/api/debug/dns")
 async def debug_dns():
-    """Temporary debug endpoint: test DNS resolution inside the container."""
+    """Temporary debug endpoint: test DNS + TCP connectivity inside container."""
     import socket
     import asyncio
+    import httpx
     from app.services.ai_service import call_llm
 
     hosts = [
-        "llm-m380un2ik5zyovnb.cn-beijing.maas.aliyuncs.com",
-        "generativelanguage.googleapis.com",
-        "dashscope.aliyuncs.com",
+        ("kimi", "llm-m380un2ik5zyovnb.cn-beijing.maas.aliyuncs.com", 443),
+        ("gemini", "generativelanguage.googleapis.com", 443),
     ]
     results = {}
-    for h in hosts:
+    for label, h, port in hosts:
+        info = {}
+        # DNS
         try:
             ip = socket.gethostbyname(h)
-            results[h] = {"resolved": ip}
+            info["dns"] = ip
         except Exception as e:
-            results[h] = {"error": f"{type(e).__name__}: {e}"}
+            info["dns_error"] = f"{type(e).__name__}: {e}"
+            results[label] = info
+            continue
 
-    # Also test a real LLM call
+        # TCP connect
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(h, port), timeout=15
+            )
+            info["tcp_connect"] = "OK"
+            writer.close()
+            await writer.wait_closed()
+        except Exception as e:
+            info["tcp_error"] = f"{type(e).__name__}: {e}"
+
+        # HTTP GET (TLS handshake)
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+                resp = await client.get(f"https://{h}/", follow_redirects=False)
+                info["http_status"] = resp.status_code
+        except Exception as e:
+            info["http_error"] = f"{type(e).__name__}: {str(e)[:150]}"
+
+        results[label] = info
+
+    # LLM call
     llm_result = "not attempted"
     try:
         content = await asyncio.wait_for(
@@ -87,4 +112,4 @@ async def debug_dns():
     except Exception as e:
         llm_result = f"FAIL: {type(e).__name__}: {str(e)[:200]}"
 
-    return {"dns": results, "llm_test": llm_result}
+    return {"tests": results, "llm_test": llm_result}
