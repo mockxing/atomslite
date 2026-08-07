@@ -700,13 +700,13 @@ async def execute_llm_tool(
         # Continue Building - full code
         user_msg = f"Here is the existing code:\n\n{existing_code}\n\nNow modify it to: {prompt}\n\nRequirement summary: {analysis.get('summary', '')}\nFeatures: {', '.join(analysis.get('core_features', []))}"
         system_msg = CONTINUE_SYSTEM_PROMPT
-        max_tok = 4096
+        max_tok = 8000
     else:
         # generation - full code
         design_context = "\n".join(f"- {o}" for o in design_outputs) if design_outputs else ""
         user_msg = f"Build a web application: {prompt}\n\nRequirement summary: {analysis.get('summary', '')}\nCore features: {', '.join(analysis.get('core_features', []))}\nUI style: {analysis.get('ui_style', '')}\n\nDesign decisions:\n{design_context}"
         system_msg = GENERATOR_SYSTEM_PROMPT
-        max_tok = 4096
+        max_tok = 8000
 
     response = await client.chat.completions.create(
         model=settings.OPENAI_MODEL,
@@ -718,7 +718,8 @@ async def execute_llm_tool(
         max_tokens=max_tok,
     )
 
-    content = response.choices[0].message.content.strip()
+    raw = response.choices[0].message.content
+    content = (raw or "").strip()
 
     # Robust HTML extraction: strip any non-HTML content (explanations, code fences)
     if prompt_type in ("generation", "continuation"):
@@ -733,7 +734,9 @@ async def execute_llm_tool(
 
         if start_idx >= 0:
             content = content[start_idx:]
-            # Find the last </html> tag
+            # Find the last </html> tag. If missing (e.g. output truncated by
+            # max_tokens), keep the partial HTML rather than dropping everything
+            # — a truncated page is still renderable/previewable.
             end_idx = content.lower().rfind("</html>")
             if end_idx >= 0:
                 content = content[:end_idx + len("</html>")]
@@ -746,6 +749,11 @@ async def execute_llm_tool(
                 if lines and lines[-1].strip() == "```":
                     lines = lines[:-1]
                 content = "\n".join(lines)
+
+    # Fallback: if extraction yielded nothing but the model did return
+    # something, use the raw output so we never silently lose the result.
+    if not content and raw:
+        content = raw.strip()
 
     return content
 
@@ -763,6 +771,16 @@ async def execute_file_writer_tool(
 
     html_content = context.get("generated_code", "")
     docs = context.get("docs", {})
+
+    # Fallback: generated_code may be empty if the generator step failed to
+    # propagate it. Recover the last non-empty HTML output from task_outputs so
+    # we still persist a usable artifact instead of silently producing nothing.
+    if not html_content:
+        task_outputs = context.get("task_outputs", {}) or {}
+        for val in reversed(list(task_outputs.values())):
+            if isinstance(val, str) and "<html" in val.lower():
+                html_content = val
+                break
 
     if not html_content:
         return {"status": "skipped", "message": "No code to save", "version": 0, "saved_files": []}
