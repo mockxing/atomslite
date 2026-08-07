@@ -7,5 +7,6 @@
     "startCommand": "python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
-  }
+  },
+  "note": "For SQLite persistence, create a Volume in the Railway dashboard mounted at /data and set DATABASE_URL=sqlite+aiosqlite:////data/atoms_lite.db. Otherwise the DB resets on every redeploy."
 }

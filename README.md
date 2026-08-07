@@ -116,7 +116,11 @@ OPENAI_MODEL=gpt-4o
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| NEXT_PUBLIC_API_URL | 后端 API 地址 | http://localhost:8000 |
+| NEXT_PUBLIC_API_URL | 后端 API 地址（不同源时填，如 `http://localhost:8000`） | (空 = 同源 `/api` 代理) |
+| BACKEND_URL | Vercel 生产环境代理目标（后端 origin） | http://localhost:8000 |
+
+> 部署到 Vercel 时，前端通过 `next.config.ts` 的 rewrites 将 `/api/*` 代理到后端，
+> 只需在 Vercel 环境变量里设置 `BACKEND_URL` 指向 Railway 后端地址，**无需** CORS 跨域。
 
 ## 🎯 Demo 模式
 
@@ -127,12 +131,35 @@ OPENAI_MODEL=gpt-4o
 - **Landing Page** — 带 Hero 区域和特性展示的着陆页
 - **CRM** — 客户关系管理系统
 
-Demo 模式下 Continue Building 支持添加 Dark Mode 等功能。
+Demo 模式下 Continue Building 支持添加 Dark Mode 等功能。**Demo 模式完全离线，无需任何 LLM Key，适合无网/无 Key 现场演示。**
 
-## 📦 部署
+## 📦 部署（Vercel 前端 + Railway 后端）
 
-- **前端**：Vercel（`vercel deploy`）
-- **后端**：Railway（`railway up`）
+### 后端 → Railway
+
+1. 在 Railway 新建 Project，关联本仓库的 `backend` 目录。
+2. **创建 Volume**（关键）：在 Railway 控制台为服务添加一个 Volume，挂载路径 `/data`。
+3. 设置环境变量：
+   - `DATABASE_URL=sqlite+aiosqlite:////data/atoms_lite.db`（持久化，否则重部署数据丢失）
+   - `CORS_ORIGINS=https://<你的vercel域名>`（若用同源代理则可留空）
+   - `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`（可选，不填走 Demo 模式）
+4. 部署后记录后端地址，如 `https://atoms-backend.up.railway.app`。
+
+### 前端 → Vercel
+
+1. 在 Vercel 导入本仓库的 `frontend` 目录。
+2. 构建命令 `npm run build`，输出目录默认（`/.next`）。
+3. 设置环境变量 `BACKEND_URL=<上一步 Railway 后端地址>`。
+4. 部署完成获得前端地址，如 `https://atoms-lite.vercel.app`。
+
+### 🔍 评委审核前检查清单
+
+- [ ] 前端 `BACKEND_URL` 已指向真实后端（不是 localhost）
+- [ ] 后端挂载了 `/data` Volume 且 `DATABASE_URL` 指向 `/data`
+- [ ] 后端 `CORS_ORIGINS` 已设为前端域名（或已用同源代理故留空）
+- [ ] 准备一个**可用的 API Key** 或确认 **Demo 模式**可现场演示
+- [ ] 浏览器打开线上 URL，能创建项目 → 看到 Execution Timeline → Preview 实时出图
+- [ ] 重新部署后端后，旧项目数据仍在（验证持久化生效）
 
 ## 📝 开发计划
 

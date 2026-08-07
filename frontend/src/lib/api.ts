@@ -1,4 +1,7 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Default: same-origin relative path. On Vercel, next.config.ts rewrites `/api/*`
+// to the Railway backend. For local dev or custom domains, set NEXT_PUBLIC_API_URL
+// to the backend origin (e.g. http://localhost:8000 or https://atoms-backend.up.railway.app).
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 export interface Project {
   id: string;
