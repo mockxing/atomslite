@@ -45,8 +45,9 @@ class Settings(BaseSettings):
         if not self.MODEL_POOL:
             return []
         raw = self.MODEL_POOL.strip()
-        # Auto-fix common JSON typos: full-width comma, single-slash URL
-        raw = raw.replace("\uff0c", ",").replace("https:/", "https://").replace("http:/", "http://")
+        # Auto-fix full-width comma (common in CJK input). Do NOT touch slashes —
+        # replace("https:/","https://") would corrupt valid "https://" into "https:///".
+        raw = raw.replace("\uff0c", ",")
         try:
             pool = json.loads(raw)
             if isinstance(pool, list) and pool:
