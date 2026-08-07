@@ -578,7 +578,7 @@ export default function WorkspacePage() {
           {/* Preview Content */}
           <div style={{ flex: 1, background: "#fff", minHeight: 0, overflow: "hidden" }}>
             {previewHtml ? (
-              <iframe ref={iframeRef} srcDoc={getPreviewContent()} style={{ width: "100%", height: "100%", border: "none" }} title="Application Preview" sandbox="allow-scripts allow-forms allow-modals" />
+              <iframe ref={iframeRef} srcDoc={getPreviewContent()} style={{ width: "100%", height: "100%", border: "none" }} title="Application Preview" sandbox="allow-scripts allow-forms allow-modals allow-same-origin" />
             ) : (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
                 <div style={{ textAlign: "center" }}>

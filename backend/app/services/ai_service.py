@@ -83,7 +83,7 @@ Design Requirements:
 Technical Rules:
 1. The HTML must be a complete, self-contained document
 2. Use vanilla JavaScript for all interactivity
-3. Persist data to localStorage where appropriate
+3. You MAY use localStorage for persistence, but MUST wrap all storage access in try/catch and fall back to in-memory state if storage is unavailable (e.g. inside sandboxed previews)
 4. Do NOT use any external resources, CDNs, or imports
 
 If this is a CONTINUATION (previous code exists), modify the existing code to add the new features while keeping all existing functionality intact. Do NOT remove existing features."""
