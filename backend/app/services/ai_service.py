@@ -1,20 +1,28 @@
 """AI Service - Requirement Analyzer, Task Planner, Execution Engine, Tools."""
 import json
 import asyncio
+import logging
 from typing import AsyncGenerator
 from openai import AsyncOpenAI
 
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def is_demo_mode() -> bool:
     """Check if we should use demo/mock mode (no API key configured)."""
+    pool = settings.model_pool
+    if pool:
+        return False
     return not settings.OPENAI_API_KEY or settings.OPENAI_API_KEY == "your-api-key-here"
 
 
 def get_ai_client() -> AsyncOpenAI:
+    """Get a client for the single (legacy) OPENAI_* config.
+    Used only when MODEL_POOL is not set.
+    """
     return AsyncOpenAI(
         api_key=settings.OPENAI_API_KEY,
         base_url=settings.OPENAI_BASE_URL,
@@ -24,6 +32,72 @@ def get_ai_client() -> AsyncOpenAI:
         # fast and the user can retry, rather than hanging for minutes.
         max_retries=0,
     )
+
+
+async def call_llm(
+    messages: list[dict],
+    max_tokens: int = 4000,
+    temperature: float = 0.7,
+    timeout: int = 300,
+) -> str:
+    """Call LLM with multi-model failover.
+
+    If MODEL_POOL is configured, tries each provider in order. On 503/429/
+    timeout/connection error, falls back to the next provider. If all fail,
+    raises the last exception.
+
+    If MODEL_POOL is empty, falls back to single OPENAI_* config via
+    get_ai_client().
+
+    Returns the response content string.
+    """
+    pool = settings.model_pool
+
+    if not pool:
+        # Legacy single-provider mode
+        client = get_ai_client()
+        response = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        return response.choices[0].message.content
+
+    # Multi-provider failover
+    last_exc = None
+    for i, provider in enumerate(pool):
+        key = provider.get("key", "")
+        base_url = provider.get("base_url", "")
+        model = provider.get("model", "")
+        if not key or not model:
+            continue
+
+        client = AsyncOpenAI(api_key=key, base_url=base_url, max_retries=0)
+        try:
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                ),
+                timeout=timeout,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            last_exc = e
+            err_type = type(e).__name__
+            # Log and continue to next provider
+            logger.warning(
+                "LLM provider %d/%d failed (model=%s): %s: %s",
+                i + 1, len(pool), model, err_type, str(e)[:200],
+            )
+            continue
+
+    # All providers failed
+    raise last_exc or RuntimeError("No LLM providers available")
 
 
 # ============ System Prompts ============
@@ -594,18 +668,16 @@ async def analyze_requirements(prompt: str) -> dict:
         await asyncio.sleep(0.4)
         return get_demo_analysis(prompt)
 
-    client = get_ai_client()
-    response = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
+    content = await call_llm(
         messages=[
             {"role": "system", "content": ANALYZER_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
         temperature=0.7,
         max_tokens=400,
-        timeout=120,
+        timeout=300,
     )
-    content = response.choices[0].message.content.strip()
+    content = content.strip()
     try:
         if "```" in content:
             content = content.split("```")[1]
@@ -624,7 +696,6 @@ async def plan_tasks(analysis: dict, is_continuation: bool = False) -> list[dict
         await asyncio.sleep(0.3)
         return get_demo_task_plan(analysis, is_continuation=is_continuation)
 
-    client = get_ai_client()
     analysis_str = json.dumps(analysis, ensure_ascii=False)
 
     # For continuation, instruct planner to use "continuation" prompt_type
@@ -632,17 +703,16 @@ async def plan_tasks(analysis: dict, is_continuation: bool = False) -> list[dict
     if is_continuation:
         continuation_note = "\n\nIMPORTANT: This is a CONTINUE BUILDING request. The code generation task MUST use prompt_type=\"continuation\" (not \"generation\"). The user wants to modify an existing application, not build from scratch."
 
-    response = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
+    content = await call_llm(
         messages=[
             {"role": "system", "content": TASK_PLANNER_SYSTEM_PROMPT + continuation_note},
             {"role": "user", "content": f"Requirement analysis:\n{analysis_str}"},
         ],
         temperature=0.7,
         max_tokens=800,
-        timeout=120,
+        timeout=300,
     )
-    content = response.choices[0].message.content.strip()
+    content = content.strip()
     try:
         if "```" in content:
             content = content.split("```")[1]
@@ -799,7 +869,6 @@ async def execute_llm_tool(
         return f"Task completed: {task.get('name', '')}", False
 
     # ---------- AI Mode ----------
-    client = get_ai_client()
 
     if prompt_type == "analysis":
         # Refine requirements - short call
@@ -854,8 +923,7 @@ async def execute_llm_tool(
     # timeout fires at the configured value (no 3x amplification).
     timeout = 300
 
-    response = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
+    raw = await call_llm(
         messages=[
             {"role": "system", "content": system_msg},
             {"role": "user", "content": user_msg},
@@ -865,7 +933,6 @@ async def execute_llm_tool(
         timeout=timeout,
     )
 
-    raw = response.choices[0].message.content
     content = (raw or "").strip()
 
     # ---- Incremental patch merge (continuation only) ----
@@ -896,17 +963,15 @@ async def execute_llm_tool(
                 f"Output the COMPLETE, modified HTML file. Do NOT use patch "
                 f"format — output the full document from <!DOCTYPE html> to </html>."
             )
-            fallback_response = await client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+            raw = await call_llm(
                 messages=[
                     {"role": "system", "content": GENERATOR_SYSTEM_PROMPT},
                     {"role": "user", "content": full_user_msg},
                 ],
                 temperature=0.7,
                 max_tokens=32000,
-                timeout=180,
+                timeout=300,
             )
-            raw = fallback_response.choices[0].message.content
             content = (raw or "").strip()
             # content now contains a full HTML file — fall through to the
             # robust HTML extraction below.
@@ -1101,7 +1166,6 @@ async def generate_docs(
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    client = get_ai_client()
     # Truncate generated_code to keep prompt manageable
     code_snippet = generated_code[:3000] + ("\n... (truncated)" if len(generated_code) > 3000 else "")
 
@@ -1121,17 +1185,16 @@ Current Timestamp: {now}
 
 Return JSON with keys "architecture.md" and "progress.md"."""
 
-    response = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
+    content = await call_llm(
         messages=[
             {"role": "system", "content": DOCS_SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ],
         temperature=0.5,
         max_tokens=2000,
-        timeout=120,
+        timeout=300,
     )
-    content = response.choices[0].message.content.strip()
+    content = content.strip()
 
     try:
         if "```" in content:
