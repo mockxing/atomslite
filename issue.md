@@ -120,3 +120,15 @@
   2. continuation 分支对 `existing_code` 加头尾截断保护：超过 `MAX_EXISTING=14000` 字符时保留前 60% + 后 40%，中间插入"省略、保持原样"提示，避免上下文撑爆、同时约束模型只改指定部分。
   3. `build.py` 在取 latest `index.html` 作 `existing_code` 时，检测破损 artifact（不以 `</html>` 结尾）则回退为空，避免把脏数据喂给 continuation 触发重写。
 - **状态**：代码已改（ai_service.py + build.py），无 lint 错误，待提交 + 部署。
+
+---
+
+## Issue 9：构建中途客户端断开 / 超时，project 永久卡在 GENERATING（最后一步 running）
+
+- **现象**：对某 project（2637b862）做第三次 Continue Building，跑到最后一个 `Generate ... App Code` 步骤后中断，project 一直 `status=GENERATING`，最后一步 execution 永远 `running`、无 completed/failed；前端页面停止 loading（isBuilding=false）但时间线"卡在最后一步"。
+- **根因**：`stream_build_process`（ai_service.py）的 task 循环 `try` 只 `except Exception`。SSE 客户端断开时，sse_starlette 取消消费协程，`CancelledError` 是 `BaseException` 子类（非 Exception），穿透 `except Exception` 未被捕获 → generator 协程被直接销毁，**没有任何 finally 把 project 状态收尾** → 永久 `GENERATING`。本次第三代续建用 `max_tok=32000` 生成更长页面，耗时更久，更易在 Railway 平台/代理超时或前端切走时断连触发。
+- **解决方案**（本次修复）：
+  1. `build.py` 的 SSE `event_generator` 外包 `try/finally`，在连接取消/断开时调用 `_finalize_on_disconnect()`：若 project 仍处于非终态（非 READY/FAILED），置为 `FAILED` 并补一条 `Build interrupted` failed execution，避免 UI 永久卡死。
+  2. `executions.py` 新增 `PATCH /api/executions/{id}` 端点，便于把中断残留的 `running` 步骤标记为 `failed`（运维修复历史脏数据用）。
+- **验证/恢复**：部署后用 PATCH 把卡死的 project 置回 READY，并用 executions PATCH 把孤儿 running 步骤标 failed，用户即可看到 v2 成品并重试续建。
+- **状态**：代码已改（build.py + executions.py），无 lint 错误，待提交 + 部署 + 解锁该 project。

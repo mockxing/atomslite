@@ -32,3 +32,19 @@ async def create_execution(data: ExecutionCreate, db: AsyncSession = Depends(get
     await db.commit()
     await db.refresh(execution)
     return execution
+
+
+@router.patch("/{execution_id}", response_model=ExecutionResponse)
+async def update_execution(execution_id: int, data: ExecutionCreate, db: AsyncSession = Depends(get_db)):
+    """Update an execution step (e.g. mark an interrupted 'running' step as 'failed')."""
+    result = await db.execute(select(Execution).where(Execution.id == execution_id))
+    execution = result.scalar_one_or_none()
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        if value is not None:
+            setattr(execution, key, value)
+    await db.commit()
+    await db.refresh(execution)
+    return execution
