@@ -938,43 +938,47 @@ async def execute_llm_tool(
     # ---- Incremental patch merge (continuation only) ----
     # If the model returned a structured patch block (as instructed in patch
     # mode), merge it back into the saved artifact. This is the fast path.
-    if prompt_type == "continuation" and existing_code and REPLACE_BEGIN in content:
+    # Check for ANY of the three markers — the model sometimes omits the
+    # opening <<<REPLACE_BEGIN>>> and only emits the middle/end markers. If we
+    # only checked for BEGIN, a malformed patch would bypass this branch
+    # entirely and the raw marker-laced text would be shipped as the "result"
+    # (see Issue 11: ver 4 was only 201 chars of <<<REPLACE_ANCHOR_END>>>...).
+    has_patch_markers = any(m in content for m in (REPLACE_BEGIN, REPLACE_ANCHOR_END, REPLACE_END))
+    if prompt_type == "continuation" and existing_code and has_patch_markers:
         merged = apply_incremental_merge(existing_code, content)
         if merged is not None:
             # Patch applied cleanly and the result validated as a complete doc.
             return merged, False
-        # The model gave us a patch but we couldn't apply it safely (bad anchor,
-        # malformed block, or broken result). If the patch content also doesn't
-        # contain a full HTML document, FALL BACK to a full-file rewrite instead
-        # of failing the task — the user shouldn't have to re-run just because
-        # the model picked a bad anchor. We re-issue the request with the
-        # GENERATOR_SYSTEM_PROMPT (which has continuation instructions) and the
-        # full existing code, asking for a complete HTML file.
-        if "<html" not in content.lower():
-            # Full-rewrite fallback: re-request with the generator prompt that
-            # instructs the model to output the entire file, preserving existing
-            # features and applying the requested change.
-            full_user_msg = (
-                f"This is a CONTINUATION of an existing application. "
-                f"Here is the current code:\n\n{existing_code}\n\n"
-                f"Modification request: {prompt}\n\n"
-                f"Requirement summary: {analysis.get('summary', '')}\n"
-                f"Features: {', '.join(analysis.get('core_features', []))}\n\n"
-                f"Output the COMPLETE, modified HTML file. Do NOT use patch "
-                f"format — output the full document from <!DOCTYPE html> to </html>."
-            )
-            raw = await call_llm(
-                messages=[
-                    {"role": "system", "content": GENERATOR_SYSTEM_PROMPT},
-                    {"role": "user", "content": full_user_msg},
-                ],
-                temperature=0.7,
-                max_tokens=32000,
-                timeout=300,
-            )
-            content = (raw or "").strip()
-            # content now contains a full HTML file — fall through to the
-            # robust HTML extraction below.
+        # The model gave us a patch block but we couldn't apply it safely (bad
+        # anchor, malformed block, or broken merge result). ALWAYS fall back to a
+        # full-file rewrite — do NOT rely on "<html" not in content" to decide.
+        # The patch block itself contains the copied <html...> anchor from the
+        # existing file, so that check is almost always False and would skip the
+        # fallback, leaving a broken <<<REPLACE...>>>-laced string to be shipped
+        # as the "result" (a silent no-op / fake success). Re-issue the request
+        # with the GENERATOR_SYSTEM_PROMPT (which carries continuation
+        # instructions) and the full existing code, asking for a complete file.
+        full_user_msg = (
+            f"This is a CONTINUATION of an existing application. "
+            f"Here is the current code:\n\n{existing_code}\n\n"
+            f"Modification request: {prompt}\n\n"
+            f"Requirement summary: {analysis.get('summary', '')}\n"
+            f"Features: {', '.join(analysis.get('core_features', []))}\n\n"
+            f"Output the COMPLETE, modified HTML file. Do NOT use patch "
+            f"format — output the full document from <!DOCTYPE html> to </html>."
+        )
+        raw = await call_llm(
+            messages=[
+                {"role": "system", "content": GENERATOR_SYSTEM_PROMPT},
+                {"role": "user", "content": full_user_msg},
+            ],
+            temperature=0.7,
+            max_tokens=32000,
+            timeout=300,
+        )
+        content = (raw or "").strip()
+        # content now contains a full HTML file — fall through to the
+        # robust HTML extraction below.
 
     # Robust HTML extraction: strip any non-HTML content (explanations, code fences)
     if prompt_type in ("generation", "continuation"):
@@ -1014,6 +1018,18 @@ async def execute_llm_tool(
     if not content and raw:
         content = raw.strip()
 
+    # Guard: never ship a patch-marked / broken string as a "successful" result.
+    # If we still see REPLACE markers here (patch failed AND full-rewrite
+    # fallback also failed to produce a clean document), fail loudly instead of
+    # silently persisting a broken artifact (this used to look like a "no-op"
+    # build — see Issue 11).
+    if REPLACE_BEGIN in content:
+        raise ValueError(
+            "LLM returned patch markers (<<<REPLACE_BEGIN>>>) that could not be "
+            "applied and the full-rewrite fallback also failed to produce a clean "
+            "HTML document. Aborting to avoid a broken/silent artifact."
+        )
+
     return content, is_truncated
 
 
@@ -1045,6 +1061,14 @@ async def execute_file_writer_tool(
     if not html_content:
         return {"status": "skipped", "message": "No code to save", "version": 0, "saved_files": []}
 
+    # Guard: if we somehow still got patch markers in the code, treat it as a
+    # failed build instead of persisting a broken artifact (see Issue 11).
+    if REPLACE_BEGIN in html_content:
+        raise ValueError(
+            "file_writer received content still containing <<<REPLACE_BEGIN>>> "
+            "markers — refusing to save a broken artifact."
+        )
+
     # Collect all files to save: index.html + docs
     files_to_save = {"index.html": html_content}
     for fname, fcontent in docs.items():
@@ -1057,14 +1081,28 @@ async def execute_file_writer_tool(
     try:
         async with async_session() as db:
             for filename, content in files_to_save.items():
-                # Query max version for this project + filename
-                version_result = await db.execute(
-                    select(Artifact.version)
+                # Query latest version + its content for this project + filename
+                latest_result = await db.execute(
+                    select(Artifact.version, Artifact.content)
                     .where(Artifact.project_id == project_id, Artifact.filename == filename)
                     .order_by(Artifact.version.desc())
                     .limit(1)
                 )
-                max_version = version_result.scalar_one_or_none()
+                latest_row = latest_result.first()
+                max_version = latest_row[0] if latest_row else None
+                latest_content = latest_row[1] if latest_row else None
+
+                # Skip if the new content is identical to the latest version —
+                # persisting a duplicate version is a silent no-op that makes a
+                # failed/empty build look successful (see Issue 11).
+                if latest_content is not None and content == latest_content:
+                    if filename == "index.html":
+                        saved_version = max_version
+                    saved_files.append(
+                        {"filename": filename, "version": max_version, "content": content, "skipped": True}
+                    )
+                    continue
+
                 new_version = (max_version or 0) + 1
 
                 artifact = Artifact(

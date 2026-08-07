@@ -85,6 +85,7 @@
 | 偶发 failed | 读 execution result traceback（Issue 3 debug 版） |
 | 走 Demo | 查 `MODEL_POOL` JSON 合法性（Issue 6） |
 | 改动未生效 | 是否手动跑 CLI 部署（Issue 5） |
+| 构建偶发失败/限流 | 是否配 `MODEL_POOL` 多 provider 热备；PowerShell 设变量用 Python subprocess（Issue 10） |
 
 - 后端域名：`https://atoms-lite-backend-production.up.railway.app`
 - 前端域名：`https://atoms-lite-frontend.vercel.app`
@@ -132,3 +133,48 @@
   2. `executions.py` 新增 `PATCH /api/executions/{id}` 端点，便于把中断残留的 `running` 步骤标记为 `failed`（运维修复历史脏数据用）。
 - **验证/恢复**：部署后用 PATCH 把卡死的 project 置回 READY，并用 executions PATCH 把孤儿 running 步骤标 failed，用户即可看到 v2 成品并重试续建。
 - **状态**：代码已改（build.py + executions.py），无 lint 错误，待提交 + 部署 + 解锁该 project。
+
+---
+
+## Issue 10：多模型故障转移（MODEL_POOL）特性落地
+
+- **背景**：线上（Railway 美节点跨太平洋）单 provider 偶发 503 / 429 / 超时 / 连接错误，导致整次构建失败。为提升真实模式可用性，引入 `MODEL_POOL` 多 provider 热备。
+- **实现要点**：
+  1. `backend/app/config.py`：新增 `MODEL_POOL` 字段 + `model_pool` property（解析 JSON 数组，容错全角逗号 `，` → `,`）。解析失败时 `log.error` 明确告警，不再静默退化（呼应 Issue 6）。`MODEL_POOL` 为空时回退单 `OPENAI_*` 配置（向后兼容）。
+  2. `backend/app/services/ai_service.py`：新增 `call_llm()`，遍历 pool 每个 provider，`AsyncOpenAI(max_retries=0)` + `asyncio.wait_for(timeout=300)` + `create(timeout=300)`。任一 provider 抛 503 / 429 / 超时 / 连接错误即切下一个，全失败才抛异常。
+  3. 流水线 5 处 LLM 调用（analyze_requirements / plan_tasks / execute_llm_tool 主调用 + fallback / generate_docs）全部改为经 `call_llm()`，故障转移对全流程生效。
+- **关键约束**：
+  - `max_retries=0` 必须：openai SDK 默认 `max_retries=2`，单次超时会被放大 3 倍（90s→270s），叠加 `wait_for` 反而拖垮整体故障转移。
+  - 流式（`stream=True`）场景只在 `create()` 抛错时触发切换；**流中途断流无法无缝切下一 provider**（需重发请求）。
+- **部署注意（PowerShell 教训）**：`railway variables set "MODEL_POOL=..."` 双引号会被 PowerShell 吞掉，必须改用 Python `subprocess` 透传 JSON 字符串设置。生产环境 `MODEL_POOL` 变量值由用户自行管理，部署脚本不擅自改动。
+- **本地验证**：`backend/scripts/test_failover.py`（`PROBE_TIMEOUT=25 python scripts/test_failover.py`）实测各 provider 延迟与故障转移链路。
+- **状态**：特性已落地，生产环境按 SOP 配置 `MODEL_POOL` 后生效。
+
+---
+
+## Issue 11：Continue Building 假成功 / 残缺页面（patch 标记泄漏到产物）
+
+- **现象**：对某 project（d1fb250b…）做 Continue Building（加 dark theme）。
+  - **第一次复现**：前端流程走完、project 状态 READY，但 artifact 没新增版本（index.html 停在 ver 3），页面完全没变。
+  - **第二次复现（实测抓到现场）**：artifact 出了 ver 4，但 ver 4 **只有 201 字符**，内容是残缺的 patch 标记片段，前端页面只显示 `<<>>` 乱码。
+- **第二次复现的 ver 4 完整内容**（铁证）：
+  ```html
+  <html lang="en" data-theme="light" data-accent="indigo" data-contrast="normal">
+  <<<REPLACE_ANCHOR_END>>>
+  <html lang="en" data-theme="dark" data-accent="indigo" data-contrast="normal">
+  <<<REPLACE_END>>>
+  ```
+- **根因（线上旧代码 `59e3011`）**：
+  1. 模型（provider 3/4，前两个 Gemini 429 后 fall through 成功）返回了**残缺 patch 块**——只有 `<<<REPLACE_ANCHOR_END>>>` 和 `<<<REPLACE_END>>>`，**缺了开头的 `<<<REPLACE_BEGIN>>>`**。
+  2. `execute_llm_tool` 第 941 行判断 `REPLACE_BEGIN in content` → **False**（因为模型漏了 BEGIN）→ **整个 patch 合并分支被跳过**。
+  3. `content` 原样走到 HTML 提取：`content.find("<html")` 在 anchor 片段里找到 `<html` → 截取 → `rfind("</html>")` 没找到 → `is_truncated=True`，但**仍保留这 201 字符残片**作为结果返回。
+  4. `file_writer` 收到含 `<<<REPLACE` 标记的残片 → 旧代码**无标记校验** → 直接存成 ver 4。
+  5. 前端渲染 201 字符残片 → 浏览器把 `<<<REPLACE_ANCHOR_END>>>` 显示成 `<<>>` → **页面只剩乱码**。
+- **第一次复现（页面完全没变）的路径**：上次模型可能返回了完整三段标记但 anchor 没匹配 → `apply_incremental_merge` 返回 None → 旧代码 `"<html" not in content` 误判跳过 full-rewrite fallback → 截取后 content 为空 → `file_writer` 因 `not html_content` 返回 skipped → 无 ver 4。两次复现是同一缺陷的不同表现。
+- **故障转移确认正常**：provider 1/2（Gemini）429 → fall through 到 3/4 成功 → analyzer/planner/design 全部 completed。**不是 LLM 全失败，不是超时，是 patch 格式不规范被静默放过。**
+- **修复方案 + 实施状态**：
+  1. ✅ `execute_llm_tool` patch 检测条件：从仅 `REPLACE_BEGIN in content` 改为**检测任意一个 REPLACE 标记**（模型常漏 BEGIN 只输出后两个）。**已实施。**
+  2. ✅ `execute_llm_tool` continuation 分支：patch 合并失败时**无条件触发 full-rewrite fallback**（去掉 `"<html" not in content` 误判）；函数末尾新增守卫：`content` 仍含任意 `<<<REPLACE` 标记则 **`raise ValueError`**。**已实施。**
+  3. ✅ `execute_file_writer_tool`：入口若 `generated_code` 含 `<<<REPLACE` 标记则 **`raise ValueError`**（拒绝存残片）；写入时若新内容与上一版本完全相同则 skip。**已实施。**
+  4. ⚠️ `build.py` 的 `_finalize_on_disconnect`：经核查当前代码已从 Issue 9 改为"仅在非终态时置 FAILED"，行为正确，**无需改动**。
+- **状态**：核心修复 1、2、3 已实施（ai_service.py），lint 通过；待提交 + CLI 部署后生效。
