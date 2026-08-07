@@ -794,36 +794,46 @@ async def execute_file_writer_tool(
     saved_files = []
     saved_version = 1
 
-    async with async_session() as db:
-        for filename, content in files_to_save.items():
-            # Query max version for this project + filename
-            version_result = await db.execute(
-                select(Artifact.version)
-                .where(Artifact.project_id == project_id, Artifact.filename == filename)
-                .order_by(Artifact.version.desc())
-                .limit(1)
-            )
-            max_version = version_result.scalar_one_or_none()
-            new_version = (max_version or 0) + 1
+    try:
+        async with async_session() as db:
+            for filename, content in files_to_save.items():
+                # Query max version for this project + filename
+                version_result = await db.execute(
+                    select(Artifact.version)
+                    .where(Artifact.project_id == project_id, Artifact.filename == filename)
+                    .order_by(Artifact.version.desc())
+                    .limit(1)
+                )
+                max_version = version_result.scalar_one_or_none()
+                new_version = (max_version or 0) + 1
 
-            artifact = Artifact(
+                artifact = Artifact(
+                    project_id=project_id,
+                    filename=filename,
+                    content=content,
+                    version=new_version,
+                )
+                db.add(artifact)
+                saved_files.append({"filename": filename, "version": new_version, "content": content})
+                if filename == "index.html":
+                    saved_version = new_version
+
+            conv = Conversation(
                 project_id=project_id,
-                filename=filename,
-                content=content,
-                version=new_version,
+                role="assistant",
+                content=f"Generated application based on: {prompt}",
             )
-            db.add(artifact)
-            saved_files.append({"filename": filename, "version": new_version, "content": content})
-            if filename == "index.html":
-                saved_version = new_version
-
-        conv = Conversation(
-            project_id=project_id,
-            role="assistant",
-            content=f"Generated application based on: {prompt}",
-        )
-        db.add(conv)
-        await db.commit()
+            db.add(conv)
+            await db.commit()
+    except Exception as exc:
+        import traceback
+        return {
+            "status": "failed",
+            "message": f"file_writer error: {type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc()[-800:],
+            "version": 0,
+            "saved_files": [],
+        }
 
     return {
         "status": "saved",
