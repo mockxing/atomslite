@@ -35,7 +35,7 @@ async def create_execution(data: ExecutionCreate, db: AsyncSession = Depends(get
 
 
 @router.patch("/{execution_id}", response_model=ExecutionResponse)
-async def update_execution(execution_id: int, data: ExecutionCreate, db: AsyncSession = Depends(get_db)):
+async def update_execution(execution_id: str, data: ExecutionCreate, db: AsyncSession = Depends(get_db)):
     """Update an execution step (e.g. mark an interrupted 'running' step as 'failed')."""
     result = await db.execute(select(Execution).where(Execution.id == execution_id))
     execution = result.scalar_one_or_none()
