@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # Ignore any extra env vars / .env keys not declared above. Without this,
+        # an unrelated variable (e.g. MODEL_POOL) in .env or the deployment env
+        # makes Settings() fail and the whole app refuse to start.
+        extra = "ignore"
 
 
 @lru_cache()

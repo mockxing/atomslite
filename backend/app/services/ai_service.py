@@ -88,18 +88,26 @@ Technical Rules:
 
 If this is a CONTINUATION (previous code exists), modify the existing code to add the new features while keeping all existing functionality intact. Do NOT remove existing features."""
 
-CONTINUE_SYSTEM_PROMPT = """You are an AI code generator that MODIFIES existing web applications. You will be given the existing HTML code and a modification request.
+CONTINUE_SYSTEM_PROMPT = """You are an AI code generator that MODIFIES existing web applications. You will be given the current application code and a modification request.
 
-CRITICAL: You MUST preserve the existing code and only make the requested changes. Do NOT rewrite the page from scratch.
+CRITICAL: You MUST output a STRUCTURED PATCH, not a full file. Do NOT reproduce the whole HTML document. Output only the section that needs to change, wrapped in the exact markers shown below. This keeps the response small and fast.
+
+Exact output format (one block only):
+<<<REPLACE_BEGIN>>>
+<ANCHOR: an exact, unique substring copied VERBATIM from the given code, marking the location to change>
+<<<REPLACE_ANCHOR_END>>>
+<REPLACEMENT: the new/modified code, exactly as it should appear after the change>
+<<<REPLACE_END>>>
 
 Rules:
-1. Output ONLY the raw HTML code. No explanations, no introductions, no markdown code fences. Start with <!DOCTYPE html> and end with </html>.
-2. Keep ALL existing HTML structure, features, and functionality intact.
-3. Only ADD or MODIFY what the user requested - do not remove or rewrite existing parts.
-4. Maintain the existing visual style (colors, fonts, spacing) and only change what's asked.
-5. The output must be a complete, working HTML file (not a diff or patch).
-6. If the user asks to change theme/colors, update CSS variables but keep the layout structure.
-7. If the user asks to add features, add them to the existing structure without removing existing ones.
+1. The anchor line(s) between `<<<REPLACE_BEGIN>>>` and `<<<REPLACE_ANCHOR_END>>>` MUST be copied EXACTLY (character-for-character) from the provided code, and the anchor MUST be unique in the document. Pick a small, distinctive snippet (a single line or a few consecutive lines) at the exact location to change — e.g. an opening tag, a CSS variable rule, a <script> section, or a specific component's markup. Do NOT add or remove whitespace from the anchor.
+2. Do NOT include any marker inside the replacement content. The replacement code goes strictly between `<<<REPLACE_ANCHOR_END>>>` and `<<<REPLACE_END>>>`.
+3. Keep ALL code you are NOT changing exactly as-is — only the anchored section is replaced.
+4. The replacement must be well-formed and balanced: if your anchor is a whole element (e.g. <div>...</div> or <style>...</style>), the replacement must include both its opening and closing tags.
+5. Maintain the existing visual style (colors, fonts, spacing) and only change what's asked.
+6. If the user asks to change theme/colors, update the CSS variables or add a style block but keep the layout structure.
+7. If the user asks to add a feature, add it in the right place and keep everything else untouched.
+8. Output NO explanations, no markdown code fences, no intro/outro text — ONLY the patch block.
 
 Remember: This is a CONTINUATION. The user wants to ITERATE on the existing app, not rebuild it."""
 
@@ -650,7 +658,103 @@ async def plan_tasks(analysis: dict, is_continuation: bool = False) -> list[dict
         return get_demo_task_plan(analysis, is_continuation=is_continuation)
 
 
-# ============ Task Executor: Tools ============
+# ============ Incremental Merge (Continue Building patch mode) ============
+
+REPLACE_BEGIN = "<<<REPLACE_BEGIN>>>"
+REPLACE_ANCHOR_END = "<<<REPLACE_ANCHOR_END>>>"
+REPLACE_END = "<<<REPLACE_END>>>"
+
+
+def _extract_block(text: str, begin: str, end: str, strip: bool = True) -> str:
+    """Extract the substring strictly between `begin` and `end` markers.
+
+    Returns "" if markers are absent or out of order. Used both for the anchor
+    (old code) and for the replacement (new code).
+
+    `strip`: for the replacement code we trim stray blank lines around it. For
+    the anchor we must NOT strip leading indentation (the anchor is matched
+    verbatim against the existing file), so we only drop the single newline that
+    sits right after the begin marker and right before the end marker.
+    """
+    bi = text.find(begin)
+    if bi < 0:
+        return ""
+    bi += len(begin)
+    ei = text.find(end, bi)
+    if ei < 0:
+        return ""
+    block = text[bi:ei]
+    if strip:
+        return block.strip()
+    # Keep indentation inside the anchor: drop only the leading/trailing newline
+    # that comes from the marker's own line break.
+    if block.startswith("\n"):
+        block = block[1:]
+    if block.endswith("\n"):
+        block = block[:-1]
+    return block
+
+
+def _html_well_formed(html: str) -> bool:
+    """Cheap sanity check that key tags are balanced (no missing closures).
+
+    Not a full HTML parser — just enough to catch the common failure where the
+    model's replacement drops a closing tag and leaves a broken page.
+    """
+    pairs = [("body", True), ("head", True), ("script", True), ("style", True)]
+    for tag, requires_open in pairs:
+        open_count = html.lower().count(f"<{tag}")
+        close_count = html.lower().count(f"</{tag}>")
+        if open_count != close_count:
+            return False
+    return True
+
+
+def apply_incremental_merge(existing_code: str, patch_result: str) -> str | None:
+    """Apply a structured patch to existing_code and return the merged file.
+
+    The model (in continuation mode) is asked to output exactly one block:
+
+        <<<REPLACE_BEGIN>>>
+        <anchor: an EXACT, unique substring copied from the current HTML>
+        <<<REPLACE_ANCHOR_END>>>
+        <replacement code — the new/modified section>
+        <<<REPLACE_END>>>
+
+    This function:
+      1. Locates the anchor substring in existing_code (must be unique).
+      2. Replaces it with the new code.
+      3. Validates the result still looks like a complete, balanced HTML doc.
+      4. Returns None if anything looks wrong so the caller can fall back to a
+         full-file rewrite (never silently ship a broken page).
+    """
+    anchor = _extract_block(patch_result, REPLACE_BEGIN, REPLACE_ANCHOR_END, strip=False)
+    if not anchor:
+        return None
+    new_code = _extract_block(patch_result, REPLACE_ANCHOR_END, REPLACE_END)
+
+    # Reject pure deletions: dropping the anchored section entirely is too risky
+    # (often leaves unbalanced tags). The full-file rewrite path can still do it.
+    if not new_code:
+        return None
+
+    # Anchor must appear exactly once; ambiguity or absence => fail to fallback.
+    count = existing_code.count(anchor)
+    if count != 1:
+        return None
+
+    merged = existing_code.replace(anchor, new_code, 1)
+
+    # Validate the merged output is still a complete, balanced HTML doc.
+    if "<html" not in merged.lower() or not merged.strip().lower().endswith("</html>"):
+        return None
+    if len(merged) < len(existing_code) // 2:
+        return None
+    if not _html_well_formed(merged):
+        return None
+
+    return merged
+
 
 async def execute_llm_tool(
     task: dict,
@@ -704,21 +808,29 @@ async def execute_llm_tool(
         system_msg = DESIGN_TASK_SYSTEM_PROMPT
         max_tok = 400
     elif prompt_type == "continuation":
-        # Continue Building - full code
-        # Guard existing_code length: extremely long pages (e.g. big single-file
-        # apps with HTML+CSS+JS) can blow the model context when concatenated with
-        # the full instruction. Keep head + tail so the model still sees the
-        # overall structure and the parts most likely to be edited, and tell it
-        # the middle was clipped so it should preserve (not rewrite) it.
+        # Continue Building - INCREMENTAL PATCH MODE.
+        # Instead of asking the model to rewrite the whole file (slow, 180s,
+        # easy for the user to give up and refresh), we ask it to emit ONLY the
+        # changed section wrapped in anchor markers. The model output is far
+        # smaller, so the call is dramatically faster and the disconnect window
+        # shrinks. We merge the patch back into the saved artifact ourselves.
+        # Guard existing_code length: pass enough context (head + tail) that the
+        # model can still SEE the section it must change and pick an accurate
+        # anchor. We deliberately keep MAX_EXISTING generous — the speed win of
+        # patch mode comes from shrinking the OUTPUT (only the changed block),
+        # not from starving the input context.
         safe_code = existing_code or ""
         MAX_EXISTING = 14000
         if len(safe_code) > MAX_EXISTING:
             head = safe_code[: int(MAX_EXISTING * 0.6)]
             tail = safe_code[-int(MAX_EXISTING * 0.4):]
             safe_code = f"{head}\n\n/* ... middle {len(safe_code) - MAX_EXISTING} chars omitted for brevity — KEEP IT AS-IS, only change what the request asks ... */\n\n{tail}"
-        user_msg = f"Here is the existing code:\n\n{safe_code}\n\nNow modify it to: {prompt}\n\nRequirement summary: {analysis.get('summary', '')}\nFeatures: {', '.join(analysis.get('core_features', []))}"
+        user_msg = f"Here is the current application code:\n\n{safe_code}\n\nModification request: {prompt}\n\nRequirement summary: {analysis.get('summary', '')}\nFeatures: {', '.join(analysis.get('core_features', []))}\n\nEmit your change as a single patch block (see system instructions)."
         system_msg = CONTINUE_SYSTEM_PROMPT
-        # Match generation budget: long single-file pages must not be hard-cut.
+        # Keep a large output budget: patch mode makes the OUTPUT smaller in
+        # practice, but a large modification (e.g. adding a whole theme system)
+        # must never be hard-cut. The short timeout is the real "stay responsive"
+        # guard, not a small token cap.
         max_tok = 32000
     else:
         # generation - full code
@@ -730,6 +842,11 @@ async def execute_llm_tool(
         # were being hard-cut at 16k, producing truncated, non-interactive pages.
         max_tok = 32000
 
+    # Patch-mode continuation is fast (small output), so it can use a shorter
+    # timeout than full generation. This shrinks the window in which a client
+    # disconnect can leave the build half-finished.
+    timeout = 90 if prompt_type == "continuation" else 180
+
     response = await client.chat.completions.create(
         model=settings.OPENAI_MODEL,
         messages=[
@@ -738,11 +855,31 @@ async def execute_llm_tool(
         ],
         temperature=0.7,
         max_tokens=max_tok,
-        timeout=180,
+        timeout=timeout,
     )
 
     raw = response.choices[0].message.content
     content = (raw or "").strip()
+
+    # ---- Incremental patch merge (continuation only) ----
+    # If the model returned a structured patch block (as instructed in patch
+    # mode), merge it back into the saved artifact. This is the fast path.
+    if prompt_type == "continuation" and existing_code and REPLACE_BEGIN in content:
+        merged = apply_incremental_merge(existing_code, content)
+        if merged is not None:
+            # Patch applied cleanly and the result validated as a complete doc.
+            return merged, False
+        # The model gave us a patch but we couldn't apply it safely (bad anchor,
+        # malformed block, or broken result). NEVER ship a broken page and never
+        # silently save a truncated patch as the artifact. Raise so the task
+        # fails cleanly and the saved artifact stays untouched — the user can
+        # re-run. (If the model instead fell back to a full HTML doc, the branch
+        # below still handles it normally.)
+        if "<html" not in content.lower():
+            raise RuntimeError(
+                "Incremental patch could not be applied safely to the existing code. "
+                "Please re-run the build; the previous version is intact."
+            )
 
     # Robust HTML extraction: strip any non-HTML content (explanations, code fences)
     if prompt_type in ("generation", "continuation"):

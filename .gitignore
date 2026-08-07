@@ -43,4 +43,8 @@ build/
 
 # Logs
 *.log
+*.err
 npm-debug.log*
+
+# Local rollback backups (not source)
+*.bak_*
