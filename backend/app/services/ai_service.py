@@ -847,13 +847,12 @@ async def execute_llm_tool(
         # were being hard-cut at 16k, producing truncated, non-interactive pages.
         max_tok = 32000
 
-    # Patch-mode continuation: kimi-k2.7-code measured ~78s for a patch
-    # response on a domestic (China) node. Railway's production node is in the
-    # US, adding cross-Pacific latency that pushes real response time beyond
-    # 120s for larger patches (e.g. dark-theme CSS rewrites). 150s keeps the
-    # "fail fast" spirit while giving enough headroom for the worst case.
-    # Generation (first build) stays at 180s as it produces much larger output.
-    timeout = 150 if prompt_type == "continuation" else 180
+    # kimi-k2.7-code via Alibaba Cloud MaaS proxy measured ~145s for a patch
+    # response locally (Moonshot direct API was ~78s, but the proxy doubles it).
+    # Railway (ams) → Alibaba Cloud (cn-beijing) cross-Eurasia latency adds more.
+    # 300s gives enough headroom for the worst case; with max_retries=0 the
+    # timeout fires at the configured value (no 3x amplification).
+    timeout = 300
 
     response = await client.chat.completions.create(
         model=settings.OPENAI_MODEL,
