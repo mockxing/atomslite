@@ -779,8 +779,9 @@ async def execute_file_writer_tool(
     # propagate it. Recover the last non-empty HTML output from task_outputs so
     # we still persist a usable artifact instead of silently producing nothing.
     if not html_content:
-        task_outputs = context.get("task_outputs", {}) or {}
-        for val in reversed(list(task_outputs.values())):
+        task_outputs = context.get("task_outputs", []) or []
+        # task_outputs is a list of per-task result strings (see scheduler).
+        for val in reversed(task_outputs):
             if isinstance(val, str) and "<html" in val.lower():
                 html_content = val
                 break
