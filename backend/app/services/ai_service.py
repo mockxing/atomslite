@@ -18,6 +18,11 @@ def get_ai_client() -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=settings.OPENAI_API_KEY,
         base_url=settings.OPENAI_BASE_URL,
+        # Disable SDK-level retries: with the default max_retries=2, a single
+        # timeout becomes 3x (e.g. timeout=90 → 270s before the error fires).
+        # We want timeouts to fire at the configured value so the build fails
+        # fast and the user can retry, rather than hanging for minutes.
+        max_retries=0,
     )
 
 
@@ -842,10 +847,11 @@ async def execute_llm_tool(
         # were being hard-cut at 16k, producing truncated, non-interactive pages.
         max_tok = 32000
 
-    # Patch-mode continuation is fast (small output), so it can use a shorter
-    # timeout than full generation. This shrinks the window in which a client
-    # disconnect can leave the build half-finished.
-    timeout = 90 if prompt_type == "continuation" else 180
+    # Patch-mode continuation: kimi-k2.7-code measured ~78s for a patch
+    # response, so 90s was too tight (any jitter → timeout). 120s gives headroom
+    # while still failing fast enough for the user to retry. Generation (first
+    # build) stays at 180s as it produces much larger output.
+    timeout = 120 if prompt_type == "continuation" else 180
 
     response = await client.chat.completions.create(
         model=settings.OPENAI_MODEL,
