@@ -17,6 +17,10 @@ __pycache__/
 .idea/
 *.swp
 *.swo
+.trae/
+
+# AI assistant workspace (local memory/cache)
+.codebuddy/
 
 # OS
 .DS_Store
