@@ -67,12 +67,11 @@ async def call_llm(
 
     # Multi-provider failover
     last_exc = None
-    for i, provider in enumerate(pool):
+    valid_pool = [p for p in pool if p.get("key") and p.get("model")]
+    for i, provider in enumerate(valid_pool):
         key = provider.get("key", "")
         base_url = provider.get("base_url", "")
         model = provider.get("model", "")
-        if not key or not model:
-            continue
 
         client = AsyncOpenAI(api_key=key, base_url=base_url, max_retries=0)
         try:
@@ -82,6 +81,7 @@ async def call_llm(
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    timeout=timeout,
                 ),
                 timeout=timeout,
             )
@@ -92,7 +92,7 @@ async def call_llm(
             # Log and continue to next provider
             logger.warning(
                 "LLM provider %d/%d failed (model=%s): %s: %s",
-                i + 1, len(pool), model, err_type, str(e)[:200],
+                i + 1, len(valid_pool), model, err_type, str(e)[:200],
             )
             continue
 
