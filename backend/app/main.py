@@ -55,91 +55,33 @@ async def health_check():
 
 @app.get("/api/debug/dns")
 async def debug_dns():
-    """Temporary debug endpoint: test DNS + TCP connectivity inside container."""
-    import socket
-    import asyncio
-    import httpx
-    from app.services.ai_service import call_llm
+    """Temporary debug: dump MODEL_POOL raw + parsed values."""
+    import os
+    from app.config import get_settings
 
-    hosts = [
-        ("kimi", "llm-m380un2ik5zyovnb.cn-beijing.maas.aliyuncs.com", 443),
-        ("gemini", "generativelanguage.googleapis.com", 443),
-    ]
-    results = {}
-    for label, h, port in hosts:
-        info = {}
-        # DNS
-        try:
-            ip = socket.gethostbyname(h)
-            info["dns"] = ip
-        except Exception as e:
-            info["dns_error"] = f"{type(e).__name__}: {e}"
-            results[label] = info
-            continue
+    s = get_settings()
+    raw_env = os.environ.get("MODEL_POOL", "<not set>")
+    pool = s.model_pool
 
-        # TCP connect
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(h, port), timeout=15
-            )
-            info["tcp_connect"] = "OK"
-            writer.close()
-            await writer.wait_closed()
-        except Exception as e:
-            info["tcp_error"] = f"{type(e).__name__}: {e}"
+    # Dump each provider's fields with repr to expose hidden chars
+    providers_detail = []
+    for i, p in enumerate(pool):
+        providers_detail.append({
+            "index": i,
+            "key_repr": repr(p.get("key", "")),
+            "key_len": len(p.get("key", "")),
+            "base_url_repr": repr(p.get("base_url", "")),
+            "base_url_len": len(p.get("base_url", "")),
+            "model_repr": repr(p.get("model", "")),
+            "model_len": len(p.get("model", "")),
+        })
 
-        # HTTP GET (TLS handshake)
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
-                resp = await client.get(f"https://{h}/", follow_redirects=False)
-                info["http_status"] = resp.status_code
-        except Exception as e:
-            info["http_error"] = f"{type(e).__name__}: {str(e)[:150]}"
-
-        results[label] = info
-
-    # LLM call via call_llm
-    llm_result = "not attempted"
-    try:
-        content = await asyncio.wait_for(
-            call_llm(
-                messages=[{"role": "user", "content": "say hi"}],
-                max_tokens=10,
-                timeout=30,
-            ),
-            timeout=40,
-        )
-        llm_result = f"OK: {content[:50]}"
-    except Exception as e:
-        llm_result = f"FAIL: {type(e).__name__}: {str(e)[:300]}"
-
-    # Direct AsyncOpenAI test with full traceback
-    import traceback as tb
-    direct_result = "not attempted"
-    try:
-        from app.config import get_settings
-        s = get_settings()
-        pool = s.model_pool
-        if pool:
-            p = pool[0]
-            client = AsyncOpenAI(
-                api_key=p["key"],
-                base_url=p["base_url"],
-                max_retries=0,
-            )
-            resp = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=p["model"],
-                    messages=[{"role": "user", "content": "hi"}],
-                    max_tokens=10,
-                    timeout=30,
-                ),
-                timeout=40,
-            )
-            direct_result = f"OK: {resp.choices[0].message.content[:50]}"
-        else:
-            direct_result = "pool empty"
-    except Exception as e:
-        direct_result = f"FAIL: {type(e).__name__}: {str(e)[:300]}\n{tb.format_exc()[-500:]}"
-
-    return {"tests": results, "llm_test": llm_result, "direct_test": direct_result}
+    return {
+        "raw_env_repr": repr(raw_env),
+        "raw_env_len": len(raw_env),
+        "parsed_pool_len": len(pool),
+        "providers": providers_detail,
+        "OPENAI_API_KEY_set": bool(s.OPENAI_API_KEY),
+        "OPENAI_BASE_URL_repr": repr(s.OPENAI_BASE_URL),
+        "OPENAI_MODEL_repr": repr(s.OPENAI_MODEL),
+    }
