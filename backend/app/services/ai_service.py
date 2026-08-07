@@ -848,10 +848,12 @@ async def execute_llm_tool(
         max_tok = 32000
 
     # Patch-mode continuation: kimi-k2.7-code measured ~78s for a patch
-    # response, so 90s was too tight (any jitter → timeout). 120s gives headroom
-    # while still failing fast enough for the user to retry. Generation (first
-    # build) stays at 180s as it produces much larger output.
-    timeout = 120 if prompt_type == "continuation" else 180
+    # response on a domestic (China) node. Railway's production node is in the
+    # US, adding cross-Pacific latency that pushes real response time beyond
+    # 120s for larger patches (e.g. dark-theme CSS rewrites). 150s keeps the
+    # "fail fast" spirit while giving enough headroom for the worst case.
+    # Generation (first build) stays at 180s as it produces much larger output.
+    timeout = 150 if prompt_type == "continuation" else 180
 
     response = await client.chat.completions.create(
         model=settings.OPENAI_MODEL,
@@ -876,16 +878,39 @@ async def execute_llm_tool(
             # Patch applied cleanly and the result validated as a complete doc.
             return merged, False
         # The model gave us a patch but we couldn't apply it safely (bad anchor,
-        # malformed block, or broken result). NEVER ship a broken page and never
-        # silently save a truncated patch as the artifact. Raise so the task
-        # fails cleanly and the saved artifact stays untouched — the user can
-        # re-run. (If the model instead fell back to a full HTML doc, the branch
-        # below still handles it normally.)
+        # malformed block, or broken result). If the patch content also doesn't
+        # contain a full HTML document, FALL BACK to a full-file rewrite instead
+        # of failing the task — the user shouldn't have to re-run just because
+        # the model picked a bad anchor. We re-issue the request with the
+        # GENERATOR_SYSTEM_PROMPT (which has continuation instructions) and the
+        # full existing code, asking for a complete HTML file.
         if "<html" not in content.lower():
-            raise RuntimeError(
-                "Incremental patch could not be applied safely to the existing code. "
-                "Please re-run the build; the previous version is intact."
+            # Full-rewrite fallback: re-request with the generator prompt that
+            # instructs the model to output the entire file, preserving existing
+            # features and applying the requested change.
+            full_user_msg = (
+                f"This is a CONTINUATION of an existing application. "
+                f"Here is the current code:\n\n{existing_code}\n\n"
+                f"Modification request: {prompt}\n\n"
+                f"Requirement summary: {analysis.get('summary', '')}\n"
+                f"Features: {', '.join(analysis.get('core_features', []))}\n\n"
+                f"Output the COMPLETE, modified HTML file. Do NOT use patch "
+                f"format — output the full document from <!DOCTYPE html> to </html>."
             )
+            fallback_response = await client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": GENERATOR_SYSTEM_PROMPT},
+                    {"role": "user", "content": full_user_msg},
+                ],
+                temperature=0.7,
+                max_tokens=32000,
+                timeout=180,
+            )
+            raw = fallback_response.choices[0].message.content
+            content = (raw or "").strip()
+            # content now contains a full HTML file — fall through to the
+            # robust HTML extraction below.
 
     # Robust HTML extraction: strip any non-HTML content (explanations, code fences)
     if prompt_type in ("generation", "continuation"):
