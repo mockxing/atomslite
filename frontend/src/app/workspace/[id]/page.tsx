@@ -168,6 +168,15 @@ export default function WorkspacePage() {
             // Only update preview in real-time; artifacts list is loaded from backend in finally
             setPreviewHtml(event.content);
             setActiveArtifact(event.filename);
+            if (event.truncated && event.filename === "index.html") {
+              setConversations((prev) => [...prev, {
+                id: `temp-trunc-${Date.now()}`,
+                project_id: projectId,
+                role: "assistant",
+                content: "⚠️ 生成内容被截断（HTML 不完整），页面可能缺少交互或样式。请重新发起一次生成以获得完整页面。",
+                created_at: new Date().toISOString(),
+              }]);
+            }
             break;
           case "project_update":
             setProject((prev) => (prev ? { ...prev, status: event.status } : null));

@@ -657,8 +657,13 @@ async def execute_llm_tool(
     context: dict,
     prompt: str,
     existing_code: str | None,
-) -> str:
-    """LLM Tool: call AI model based on task params.prompt_type."""
+) -> tuple[str, bool]:
+    """LLM Tool: call AI model based on task params.prompt_type.
+
+    Returns (content, is_truncated) — is_truncated is True when the generated
+    HTML was cut off (missing </html>), e.g. by max_tokens.
+    """
+    is_truncated = False
     prompt_type = task.get("params", {}).get("prompt_type", "generation")
     analysis = context.get("analysis", {})
     design_outputs = context.get("task_outputs", [])
@@ -668,21 +673,21 @@ async def execute_llm_tool(
         if prompt_type == "analysis":
             await asyncio.sleep(0.3)
             features = analysis.get("core_features", [])
-            return f"Requirement confirmed. Core features: {', '.join(features)}. App type: {analysis.get('app_type', 'other')}."
+            return f"Requirement confirmed. Core features: {', '.join(features)}. App type: {analysis.get('app_type', 'other')}.", False
 
         if prompt_type == "design":
             await asyncio.sleep(0.4)
-            return f"Design spec: {analysis.get('ui_style', 'modern minimal')}. Layout uses card-based structure with primary color #6366f1."
+            return f"Design spec: {analysis.get('ui_style', 'modern minimal')}. Layout uses card-based structure with primary color #6366f1.", False
 
         if prompt_type in ("generation", "continuation"):
             await asyncio.sleep(1.0)
             if existing_code:
-                return get_demo_continue_artifact(prompt, existing_code)
-            return get_demo_artifact(prompt)
+                return get_demo_continue_artifact(prompt, existing_code), False
+            return get_demo_artifact(prompt), False
 
         # Unknown prompt_type
         await asyncio.sleep(0.3)
-        return f"Task completed: {task.get('name', '')}"
+        return f"Task completed: {task.get('name', '')}", False
 
     # ---------- AI Mode ----------
     client = get_ai_client()
@@ -700,15 +705,30 @@ async def execute_llm_tool(
         max_tok = 400
     elif prompt_type == "continuation":
         # Continue Building - full code
-        user_msg = f"Here is the existing code:\n\n{existing_code}\n\nNow modify it to: {prompt}\n\nRequirement summary: {analysis.get('summary', '')}\nFeatures: {', '.join(analysis.get('core_features', []))}"
+        # Guard existing_code length: extremely long pages (e.g. big single-file
+        # apps with HTML+CSS+JS) can blow the model context when concatenated with
+        # the full instruction. Keep head + tail so the model still sees the
+        # overall structure and the parts most likely to be edited, and tell it
+        # the middle was clipped so it should preserve (not rewrite) it.
+        safe_code = existing_code or ""
+        MAX_EXISTING = 14000
+        if len(safe_code) > MAX_EXISTING:
+            head = safe_code[: int(MAX_EXISTING * 0.6)]
+            tail = safe_code[-int(MAX_EXISTING * 0.4):]
+            safe_code = f"{head}\n\n/* ... middle {len(safe_code) - MAX_EXISTING} chars omitted for brevity — KEEP IT AS-IS, only change what the request asks ... */\n\n{tail}"
+        user_msg = f"Here is the existing code:\n\n{safe_code}\n\nNow modify it to: {prompt}\n\nRequirement summary: {analysis.get('summary', '')}\nFeatures: {', '.join(analysis.get('core_features', []))}"
         system_msg = CONTINUE_SYSTEM_PROMPT
-        max_tok = 8000
+        # Match generation budget: long single-file pages must not be hard-cut.
+        max_tok = 32000
     else:
         # generation - full code
         design_context = "\n".join(f"- {o}" for o in design_outputs) if design_outputs else ""
         user_msg = f"Build a web application: {prompt}\n\nRequirement summary: {analysis.get('summary', '')}\nCore features: {', '.join(analysis.get('core_features', []))}\nUI style: {analysis.get('ui_style', '')}\n\nDesign decisions:\n{design_context}"
         system_msg = GENERATOR_SYSTEM_PROMPT
-        max_tok = 16000
+        # Raised from 16000 — custom models (deepseek/kimi/qwen) support much
+        # larger output, and long single-file apps (e.g. big HTML+CSS+JS pages)
+        # were being hard-cut at 16k, producing truncated, non-interactive pages.
+        max_tok = 32000
 
     response = await client.chat.completions.create(
         model=settings.OPENAI_MODEL,
@@ -735,14 +755,18 @@ async def execute_llm_tool(
         elif html_idx >= 0:
             start_idx = html_idx
 
+        is_truncated = False
         if start_idx >= 0:
             content = content[start_idx:]
             # Find the last </html> tag. If missing (e.g. output truncated by
             # max_tokens), keep the partial HTML rather than dropping everything
-            # — a truncated page is still renderable/previewable.
+            # — a truncated page is still renderable/previewable. But flag it so
+            # the UI can warn the user that the page may be incomplete.
             end_idx = content.lower().rfind("</html>")
             if end_idx >= 0:
                 content = content[:end_idx + len("</html>")]
+            else:
+                is_truncated = True
         else:
             # Strategy 2: strip markdown code fences if present
             if content.startswith("```"):
@@ -758,7 +782,7 @@ async def execute_llm_tool(
     if not content and raw:
         content = raw.strip()
 
-    return content
+    return content, is_truncated
 
 
 async def execute_file_writer_tool(
@@ -1045,10 +1069,11 @@ async def stream_build_process(
 
         try:
             if task_tool == "llm":
-                result = await execute_llm_tool(task, context, prompt, existing_code)
+                result, is_truncated = await execute_llm_tool(task, context, prompt, existing_code)
                 prompt_type = task.get("params", {}).get("prompt_type", "")
                 if prompt_type in ("generation", "continuation"):
                     context["generated_code"] = result
+                    context["generated_code_truncated"] = is_truncated
 
                     # Generate process docs (architecture.md + progress.md) after code generation
                     if context["generated_code"]:
@@ -1109,6 +1134,7 @@ async def stream_build_process(
 
     # Send all artifacts (index.html + architecture.md + progress.md)
     saved_files = context.get("saved_files", [])
+    is_truncated = context.get("generated_code_truncated", False)
     if saved_files:
         for f in saved_files:
             yield {
@@ -1116,6 +1142,7 @@ async def stream_build_process(
                 "filename": f["filename"],
                 "content": f["content"],
                 "version": f["version"],
+                "truncated": is_truncated and f["filename"] == "index.html",
             }
     else:
         # Fallback if saved_files not populated

@@ -10,6 +10,7 @@ export type ArtifactEvent = {
   filename: string;
   content: string;
   version?: number;
+  truncated?: boolean;
 };
 
 export type ProjectUpdateEvent = {
