@@ -590,6 +590,7 @@ async def analyze_requirements(prompt: str) -> dict:
         ],
         temperature=0.7,
         max_tokens=400,
+        timeout=120,
     )
     content = response.choices[0].message.content.strip()
     try:
@@ -626,6 +627,7 @@ async def plan_tasks(analysis: dict, is_continuation: bool = False) -> list[dict
         ],
         temperature=0.7,
         max_tokens=800,
+        timeout=120,
     )
     content = response.choices[0].message.content.strip()
     try:
@@ -706,7 +708,7 @@ async def execute_llm_tool(
         design_context = "\n".join(f"- {o}" for o in design_outputs) if design_outputs else ""
         user_msg = f"Build a web application: {prompt}\n\nRequirement summary: {analysis.get('summary', '')}\nCore features: {', '.join(analysis.get('core_features', []))}\nUI style: {analysis.get('ui_style', '')}\n\nDesign decisions:\n{design_context}"
         system_msg = GENERATOR_SYSTEM_PROMPT
-        max_tok = 8000
+        max_tok = 16000
 
     response = await client.chat.completions.create(
         model=settings.OPENAI_MODEL,
@@ -716,6 +718,7 @@ async def execute_llm_tool(
         ],
         temperature=0.7,
         max_tokens=max_tok,
+        timeout=180,
     )
 
     raw = response.choices[0].message.content
@@ -934,6 +937,7 @@ Return JSON with keys "architecture.md" and "progress.md"."""
         ],
         temperature=0.5,
         max_tokens=2000,
+        timeout=120,
     )
     content = response.choices[0].message.content.strip()
 
